@@ -1,0 +1,100 @@
+# Triage's Next.js dashboard -- the surface voice testing needs, since the
+# UI is what opens the WebSocket session at /v2/agent/voice/session
+# (releases/triage-core.yaml's runtimeConfig.voice comment). Static export
+# served by a small Go server that proxies everything else (/v2, /mcp,
+# /login, /.well-known/*) to triage-core-api at runtime -- API_URL is a
+# server-side env var, so one image works in any cluster.
+#
+# Neither the image nor the chart existed under this repo's registry before
+# this release: built and pushed straight from the symbio-triage-ui source
+# checkout, BASE_PATH=/ui to leave triage-core's own HTTPRoute "/" catch-all
+# alone on the same hostname (Next.js bakes the sub-path into every asset URL
+# at build time -- it is the one value below that is NOT runtime-portable,
+# and the server refuses to start if it doesn't match what the image shipped
+# with):
+#
+#   cd symbio-triage-ui
+#   make image KO_DOCKER_REPO=ghcr.io/den-vasyliev/abox/triage-ui BASE_PATH=/ui
+#   helm package charts/triage-ui
+#   helm push triage-ui-0.1.0.tgz oci://ghcr.io/den-vasyliev/abox/charts
+#
+# Private package like every other abox chart/image -- reuses flux-system's
+# ghcr-credentials Secret (OCIRepository pull) and the triage namespace's
+# triage-ghcr-pull Secret (pod image pull), both already created out-of-band
+# for triage-core/triage-agent. See releases/triage-core.yaml's comment for
+# the creation command if either is ever missing.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: triage-ui
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/den-vasyliev/abox/charts/triage-ui
+  ref:
+    tag: "0.1.0"
+  secretRef:
+    name: ghcr-credentials
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: triage-ui
+  namespace: triage
+spec:
+  interval: 1h
+  releaseName: triage-ui
+  chartRef:
+    kind: OCIRepository
+    name: triage-ui
+    namespace: flux-system
+  install:
+    createNamespace: true
+  values:
+    fullnameOverride: triage-ui
+    replicaCount: 1
+    image:
+      repository: ghcr.io/den-vasyliev/abox/triage-ui
+      tag: v2.0.306-36d1e08
+    imagePullSecrets:
+      - name: triage-ghcr-pull
+    basePath: /ui
+    api:
+      # Service DNS name, not the public hostname -- the WebSocket's Origin
+      # check compares Origin against Host, and api.host must stay empty
+      # (chart default) so the client's own Host is forwarded unchanged
+      # rather than rewritten to this address. A host-routed api.url would
+      # break the voice WebSocket for exactly that reason.
+      url: http://triage-core-api.triage.svc.cluster.local:8080
+    podAntiAffinity: soft
+---
+# Publishes the UI on the same custom domain triage-core and agentgateway
+# already answer on (releases/ngrok-operator.yaml's Domain/AgentEndpoint
+# pair), at /ui so it coexists with triage-core's own HTTPRoute (which
+# matches /mcp and "/" on the same hostname) -- Gateway API prefers the
+# longer path match, so /ui wins over "/" for these requests.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: triage-ui
+  namespace: triage
+spec:
+  hostnames:
+    - triageagent.ngrok.dev
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: agentgateway-external
+      namespace: agentgateway-system
+      sectionName: http
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: triage-ui
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /ui
