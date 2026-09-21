@@ -22,4 +22,5 @@ resources:
   - triage.yaml
   - triage-agent.yaml
   - triage-core.yaml
+  - triage-ui.yaml
   - xray-memory.yaml
