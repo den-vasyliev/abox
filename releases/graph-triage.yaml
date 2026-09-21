@@ -1,0 +1,45 @@
+# The triage tenant's prebuilt service graph (the core, the agent, the UI and
+# the agentgateway workloads), delivered the same way as graph-otel-demo.yaml.
+# The receiver drops application frames for a tenant with no graph cell, so
+# the tenant's virtual apps appear only once this cell is loaded.
+#
+# secretRef reuses triage-ghcr-pull since this OCIRepository lives in the
+# triage namespace (unlike triage-core/triage-agent's, which live in
+# flux-system and need the separate ghcr-credentials Secret there).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: graph-triage
+  namespace: triage
+spec:
+  interval: 10m
+  url: oci://ghcr.io/den-vasyliev/abox/graphs/triage
+  ref:
+    tag: latest
+  secretRef:
+    name: triage-ghcr-pull
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: graph-triage
+  namespace: triage
+spec:
+  interval: 10m
+  sourceRef:
+    kind: OCIRepository
+    name: graph-triage
+  path: ./
+  prune: false
+  # No dependsOn on flux-system/releases: this repo has one flat Kustomization
+  # (flux-system/releases, path ./) applying every releases/*.yaml, and since
+  # THIS object is itself one of the things releases applies, releases
+  # (wait: true) health-checks it as part of its own readiness -- a
+  # dependsOn back onto releases would deadlock both sides waiting on each
+  # other (confirmed live: releases stuck retrying every 30s citing this
+  # Kustomization 'InProgress', while this one reported releases 'not
+  # ready'). The MemoryCell CRD (xray.ai_memorycells.yaml) ships in
+  # triage-core's chart crds/ dir and is installed by Helm on that chart's
+  # install; a failed attempt before the CRD exists just retries every
+  # interval until it does (ADR-033: re-applying the same blob is a no-op,
+  # so there's no harm reconciling early and often).
